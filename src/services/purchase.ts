@@ -18,21 +18,26 @@ export async function purchaseProduct(productId: string, quantity: number) {
     throw new HttpError(404, "Product not found");
   }
 
-  // TODO: This read-then-write is not safe when two purchases run at the same time.
   if (product.stock < quantity) {
     throw new HttpError(409, "Insufficient stock");
   }
 
+  // The hook waits here without a connection. The row lock starts at the UPDATE below.
   await purchaseHooks.afterStockRead();
 
-  await prisma.product.update({
-    where: { id: productId },
-    data: { stock: { decrement: quantity } },
-  });
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.product.updateMany({
+      where: { id: productId, stock: { gte: quantity } },
+      data: { stock: { decrement: quantity } },
+    });
+    if (updated.count === 0) {
+      throw new HttpError(409, "Insufficient stock");
+    }
 
-  await purchaseHooks.beforePurchaseCreate();
+    await purchaseHooks.beforePurchaseCreate();
 
-  return prisma.purchase.create({
-    data: { productId, quantity },
+    return tx.purchase.create({
+      data: { productId, quantity },
+    });
   });
 }
